@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transcription Pipeline — Live Demo</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #171a21; --border: #2a2e38; --text: #e8e9ec;
+    --muted: #9aa1ad; --accent: #5b8def; --accent-hover: #4a7ad9;
+    --danger: #e15b5b; --success: #4caf7d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .dropzone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 28px;
+    text-align: center; cursor: pointer; transition: border-color .15s;
+  }
+  .dropzone.dragover { border-color: var(--accent); background: rgba(91,141,239,0.06); }
+  .dropzone p { margin: 4px 0; color: var(--muted); }
+  input[type=file] { display: none; }
+  .btn {
+    background: var(--accent); color: white; border: none; border-radius: 8px;
+    padding: 10px 18px; font-size: 0.95rem; cursor: pointer; font-weight: 600;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn.danger { background: var(--danger); }
+  .row { display: flex; align-items: center; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .divider { text-align: center; color: var(--muted); margin: 18px 0; font-size: 0.85rem; }
+  .mic-btn {
+    width: 64px; height: 64px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--accent); color: white; font-size: 1.6rem; display: flex;
+    align-items: center; justify-content: center; transition: background .15s, transform .15s;
+  }
+  .mic-btn.recording { background: var(--danger); animation: pulse 1.4s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(225,91,91,0.5); }
+    70% { box-shadow: 0 0 0 14px rgba(225,91,91,0); }
+    100% { box-shadow: 0 0 0 0 rgba(225,91,91,0); }
+  }
+  .status { margin-top: 14px; font-size: 0.9rem; color: var(--muted); text-align: center; }
+  .status.error { color: var(--danger); }
+  .status.ok { color: var(--success); }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
+    margin-right: 6px; vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .result { display: none; }
+  .result.visible { display: block; }
+  .meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin-bottom: 14px; }
+  .meta b { color: var(--text); }
+  .transcript { background: #10131a; border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; white-space: pre-wrap; line-height: 1.5; font-size: 0.95rem; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  td.ts { color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; background: var(--border); color: var(--muted);
+    border-radius: 999px; padding: 2px 10px; font-size: 0.75rem; margin-left: 8px; }
+  footer { text-align: center; color: var(--muted); font-size: 0.8rem; margin-top: 30px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎙️ Transcription Pipeline</h1>
+  <p class="subtitle">Upload an audio file or record from your mic. Powered by faster-whisper — supports WAV, MP3, M4A, FLAC, OGG. Long files process asynchronously.</p>
+
+  <div class="card">
+    <div class="dropzone" id="dropzone">
+      <p><strong>Click to choose a file</strong> or drag one here</p>
+      <p style="font-size:0.8rem">.wav · .mp3 · .m4a · .flac · .ogg — any length</p>
+      <input type="file" id="fileInput" accept=".wav,.mp3,.m4a,.flac,.ogg,audio/*">
+    </div>
+
+    <div class="divider">— or —</div>
+
+    <div class="row">
+      <button class="mic-btn" id="micBtn" title="Record from microphone">🎤</button>
+    </div>
+    <p class="status" id="micStatus" style="margin-top:10px;">Click the mic to start recording</p>
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card result" id="resultCard">
+    <div class="meta" id="meta"></div>
+    <div class="transcript" id="transcript"></div>
+    <table id="segmentsTable">
+      <thead><tr><th>Start</th><th>End</th><th>Text</th></tr></thead>
+      <tbody id="segmentsBody"></tbody>
+    </table>
+  </div>
+
+  <footer>Demo instance — public, unauthenticated, rate-limited. Not for sensitive audio.</footer>
+</div>
+
+<script>
+const statusEl = document.getElementById('status');
+const resultCard = document.getElementById('resultCard');
+const metaEl = document.getElementById('meta');
+const transcriptEl = document.getElementById('transcript');
+const segmentsBody = document.getElementById('segmentsBody');
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const micBtn = document.getElementById('micBtn');
+const micStatus = document.getElementById('micStatus');
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(1).padStart(4, '0');
+  return `${m}:${sec}`;
+}
+
+function setStatus(msg, cls) {
+  statusEl.className = 'status' + (cls ? ' ' + cls : '');
+  statusEl.innerHTML = msg;
+}
+
+function renderResult(result) {
+  resultCard.classList.add('visible');
+  metaEl.innerHTML = `
+    <span><b>Language:</b> ${result.language} (${(result.language_probability*100).toFixed(0)}%)</span>
+    <span><b>Duration:</b> ${fmtTime(result.duration)}</span>
+    <span><b>Segments:</b> ${result.segments.length}</span>
+  `;
+  transcriptEl.textContent = result.full_transcript || '(no speech detected)';
+  segmentsBody.innerHTML = '';
+  for (const seg of result.segments) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="ts">${fmtTime(seg.start)}</td><td class="ts">${fmtTime(seg.end)}</td><td>${seg.text}</td>`;
+    segmentsBody.appendChild(tr);
+  }
+}
+
+async function pollJob(jobId) {
+  for (let i = 0; i < 300; i++) {
+    const r = await fetch(`/v1/jobs/${jobId}`);
+    const body = await r.json();
+    if (body.status === 'completed') return body.result;
+    if (body.status === 'failed') throw new Error(body.error || 'job failed');
+    setStatus(`<span class="spinner"></span> Processing long file in the background… (${body.status})`);
+    await new Promise(res => setTimeout(res, 3000));
+  }
+  throw new Error('timed out waiting for job to complete');
+}
+
+async function submitFile(file) {
+  resultCard.classList.remove('visible');
+  setStatus(`<span class="spinner"></span> Uploading and transcribing…`);
+  const form = new FormData();
+  form.append('file', file, file.name);
+
+  try {
+    const r = await fetch('/v1/transcribe', { method: 'POST', body: form });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const body = await r.json();
+    let result;
+    if (body.mode === 'sync') {
+      result = body;
+    } else {
+      result = await pollJob(body.job_id);
+    }
+    setStatus('Done.', 'ok');
+    renderResult(result);
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'error');
+  }
+}
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) submitFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) submitFile(fileInput.files[0]);
+});
+
+let mediaRecorder = null;
+let chunks = [];
+
+micBtn.addEventListener('click', async () => {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      micBtn.classList.remove('recording');
+      micStatus.textContent = 'Click the mic to start recording';
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      submitFile(new File([blob], 'recording.webm', { type: 'audio/webm' }));
+    };
+    mediaRecorder.start();
+    micBtn.classList.add('recording');
+    micStatus.textContent = 'Recording… click again to stop';
+  } catch (e) {
+    setStatus('Microphone access denied or unavailable: ' + e.message, 'error');
+  }
+});
+</script>
+</body>
+</html>

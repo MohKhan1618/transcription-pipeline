@@ -1,0 +1,66 @@
+name: Test and Deploy
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  PROJECT_ID: transcription-pipeline-07894
+  REGION: us-central1
+  SERVICE: transcription-api
+
+permissions:
+  contents: read
+  id-token: write  # required for Workload Identity Federation
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest httpx
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/662735249234/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deployer@transcription-pipeline-07894.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --source . \
+            --project=${{ env.PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --memory=2Gi \
+            --cpu=2 \
+            --timeout=300 \
+            --concurrency=4 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --no-cpu-throttling \
+            --session-affinity \
+            --set-env-vars="MODEL_SIZE=base,RATE_LIMIT=6/minute"

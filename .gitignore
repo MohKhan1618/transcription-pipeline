@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+*.wav
+*.mp3
+tests/fixtures/
+Dataset/
+.env
+.deploy_api_key.txt
