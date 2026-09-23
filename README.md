@@ -5,6 +5,25 @@ with word/segment-level timestamps using [faster-whisper](https://github.com/SYS
 and returns structured JSON. Long files are routed to an async job queue
 instead of blocking the request.
 
+## Live demo
+
+**https://transcription-api-662735249234.us-central1.run.app**
+
+Open it directly for a browser UI (drag-and-drop upload or mic recording), or
+call the API directly with `curl` (see below). Deployed on Google Cloud Run,
+auto-deployed by GitHub Actions on every push to `master` (see
+[CI/CD](#cicd) below).
+
+**Auth is intentionally disabled on this deployment.** The service supports
+an `X-API-Key` gate plus Cloud Run IAM (both described under
+[Security by design](#security-by-design) below), but both are turned off
+here specifically so anyone can test the demo without a credential. That's a
+disclosed trade-off, not an oversight — the compensating controls are a
+tightened per-IP rate limit (6 requests/minute) and a GCP billing budget
+alert, not "no protection at all." In a real deployment both auth layers
+would be re-enabled; the code path for both already exists and is exercised
+by the test suite.
+
 ## Run it
 
 ```bash
@@ -54,6 +73,32 @@ docker build -t transcription-api .
 docker run -p 8000:8000 -e MODEL_SIZE=base transcription-api
 ```
 
+The container reads its listen port from the `$PORT` environment variable
+(defaults to 8000 locally) rather than a fixed value — required for Cloud
+Run, which injects `PORT=8080` at runtime. This was a real bug on first
+deploy: the Dockerfile originally hardcoded `--port 8000`, and Cloud Run
+couldn't reach the container until it was fixed to read `$PORT` dynamically.
+
+### Frontend / demo UI
+
+`GET /` serves a self-contained HTML/JS page (`app/static/index.html`) that
+calls the same `/v1/transcribe` and `/v1/jobs/{id}` endpoints a script or
+`curl` would — it's a client of the API, not a separate code path. It
+supports drag-and-drop file upload and microphone recording (via
+`MediaRecorder`, which outputs `.webm` — added to the allowed-format list
+for that reason). Note: this is *record-then-transcribe*, not live streaming
+transcription — faster-whisper is a batch model, not a streaming one; true
+word-by-word live captioning would need a fundamentally different
+architecture (WebSocket + sliding-window ASR) and was out of scope.
+
+### CI/CD
+
+`.github/workflows/deploy.yml` runs the pytest suite on every push and pull
+request; on push to `master`, if tests pass, it deploys straight to Cloud
+Run via `gcloud run deploy --source .`. Authentication to GCP uses Workload
+Identity Federation scoped to this exact repo — no long-lived service
+account key is stored in GitHub secrets.
+
 ### Tests
 
 ```bash
@@ -88,8 +133,9 @@ step assumes the previous one already made the data safe.
 
 The model isn't handed raw uploads directly. An **audio normalization
 step** (`app/audio.py::convert_to_wav`) runs every accepted file through
-`ffmpeg` first, converting `.mp3`, `.m4a`, `.flac`, `.ogg`, or `.wav` into a
-single canonical format: 16kHz mono PCM WAV — the input faster-whisper's
+`ffmpeg` first, converting `.mp3`, `.m4a`, `.flac`, `.ogg`, `.wav`, or
+`.webm` (browser mic recordings) into a single canonical format: 16kHz mono
+PCM WAV — the input faster-whisper's
 feature extractor expects. This means the transcription code only ever
 handles one format, decoder edge cases are isolated to one subprocess call,
 and accuracy is consistent across input sources.
@@ -159,12 +205,15 @@ sits in the pipeline rather than as a generic checklist:
    (not after buffering the whole file in memory), and a timeout on every
    `ffmpeg` subprocess call. All subprocess calls use argument lists, never
    `shell=True`.
-2. **AuthN/cost control** — optional `X-API-Key` header gate
-   (`require_api_key`, a stand-in for real OAuth2/JWT in front of a
-   production deployment) and per-IP rate limiting (`slowapi`,
-   `RATE_LIMIT` env var) on the transcription endpoint — this is the
-   endpoint that costs CPU/GPU time and model-download bandwidth per
-   call, so it's the one that needs abuse protection, not just auth.
+2. **AuthN/cost control** — an `X-API-Key` header gate (`require_api_key`,
+   a stand-in for real OAuth2/JWT in production) plus Cloud Run IAM, and
+   per-IP rate limiting (`slowapi`, `RATE_LIMIT` env var) on the
+   transcription endpoint — this is the endpoint that costs CPU/GPU time
+   per call, so it's the one that needs abuse protection, not just auth.
+   **Both auth layers are currently switched off on the public demo URL**
+   (see [Live demo](#live-demo) above) as a deliberate, disclosed choice
+   to make testing frictionless — the rate limit and a billing alert are
+   the compensating controls while it's in that state.
 3. **Storage/privacy** — uploads are written to per-request temp
    directories and deleted as soon as they're no longer needed (raw
    upload right after conversion; the normalized WAV right after
@@ -196,14 +245,17 @@ designed alongside the happy path, not after it.
 
 ## Known limitations / what I'd do with more time
 
-- **No automated speech-accuracy test.** The test suite proves the
-  pipeline runs end-to-end and fails gracefully on non-speech input, but
-  doesn't assert transcription *correctness* against a reference
-  transcript — that needs a real speech sample + expected text, which
-  I didn't want to check a binary audio fixture into the repo for. I'd
-  add a short public-domain speech clip (e.g. LibriSpeech sample) with a
-  known transcript and assert word-level similarity (e.g. WER below a
-  threshold) as a regression test.
+- **Speech-accuracy testing exists, but isn't wired into CI.** The
+  `pytest` suite proves the pipeline runs end-to-end and fails gracefully
+  on non-speech input, but doesn't assert transcription *correctness*
+  against a reference transcript. Separately, there's a manual validation
+  set (not checked into git — audio binaries don't belong in the repo) of
+  12 TTS-narrated recordings — 6 English, 6 Urdu, 30s to ~13min, across
+  all 5 supported formats — each paired with its exact source text, plus
+  a script (`Dataset/run_live_test.py`) that feeds every file to the live
+  API and computes word error rate against the known ground truth. That
+  proves real-world accuracy manually; the gap is that it isn't yet a
+  CI-gated regression test with a pass/fail WER threshold.
 - **In-memory job store**, as noted above — fine for a single-process
   demo, not for multi-replica production.
 - **PII redaction is not implemented** — a real deployment handling
